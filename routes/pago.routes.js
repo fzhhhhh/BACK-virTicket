@@ -1,15 +1,16 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const pagoController = require('../controllers/pagoController');
-const { verifyToken } = require('../middleware/authMiddleware');
+const pagoController = require("../controllers/pagoController");
+const { verifyToken } = require("../middleware/authMiddleware");
 
-// Crear preferencia de pago (requiere token)
-router.post('/crear-preferencia', verifyToken, pagoController.crearPreferencia);
+// Crear preferencia
+router.post("/crear-preferencia", verifyToken, pagoController.crearPreferencia);
 
-// Obtener pagos por usuario (requiere token)
-router.get('/usuario/:usuario_id', verifyToken, pagoController.obtenerPagosPorUsuario);
+// Registrar pago / venta
+router.post("/registrar", verifyToken, pagoController.registrarPago);
 
-// Registrar una venta (requiere token)
-router.post('/registrar', verifyToken, pagoController.registrarVentaSimulada);
+// Webhook Mercado Pago (NO lleva verifyToken)
+router.post("/webhook", pagoController.webhookMercadoPago);
 
 module.exports = router;
+

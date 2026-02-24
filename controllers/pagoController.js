@@ -1,70 +1,169 @@
-const mercadopago = require('mercadopago');
-const client = new mercadopago.MercadoPagoConfig({
-  accessToken: process.env.MP_ACCESS_TOKEN
-});
-const preference = new mercadopago.Preference(client);
-const pool = require('../config/db');
+const pool = require("../config/db");
+const { generarEntradasPorVenta } = require("../services/entradas.service");
+const { MercadoPagoConfig, Preference } = require("mercadopago");
 
-// Crear preferencia de pago de Mercado Pago
-exports.crearPreferencia = async (req, res) => {
+// ================================
+// CONFIG MERCADO PAGO (SDK NUEVO)
+// ================================
+const client = new MercadoPagoConfig({
+  accessToken: process.env.MP_ACCESS_TOKEN,
+});
+console.log("🟢 MP TOKEN:", process.env.MP_ACCESS_TOKEN);
+
+// ================================
+// CREAR PREFERENCIA
+// ================================
+const crearPreferencia = async (req, res) => {
   try {
-    const items = req.body.items;
+    const { items, usuario_id, evento_id, email_cliente } = req.body;
+
     if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Items inválidos' });
+      return res.status(400).json({ error: "Items inválidos" });
     }
 
-    const result = await preference.create({ body: { items } });
-    res.json({ id: result.id, init_point: result.init_point });
+    const preference = new Preference(client);
+
+    const response = await preference.create({
+  body: {
+    items: items.map((item) => ({
+      title: item.title,
+      quantity: item.quantity,
+      unit_price: Number(item.unit_price),
+      currency_id: "ARS",
+    })),
+
+    payer: { email: email_cliente },
+
+    metadata: {
+      usuario_id,
+      evento_id,
+      cantidad: items.reduce((acc, i) => acc + i.quantity, 0),
+    },
+
+  back_urls: {
+  success: "http://localhost:3000/pago-exitoso",
+  failure: "http://localhost:3000/pago-error",
+  pending: "http://localhost:3000/pago-pendiente",
+},
+
+    //auto_return: "approved",
+
+    //  FUERA de back_urls
+    notification_url:
+      "https://odontoid-colacobiotic-sadie.ngrok-free.dev/api/pago/webhook",
+  },
+});
+
+    res.json({
+      mp_preference_id: response.id,
+      init_point: response.init_point,
+    });
+
   } catch (error) {
-    console.error("❌ Error al crear preferencia:", error);
-    res.status(500).json({ error: error.message });
+    console.error("❌ crearPreferencia:", error);
+    res.status(500).json({ error: "Error al crear preferencia" });
   }
 };
 
-// Simular pago y guardar en la base de datos (en tabla 'pagos')
-exports.simularPago = async (req, res) => {
-  const { usuario_id, evento_id, monto, metodo } = req.body;
+// ================================
+// REGISTRAR PAGO / VENTA
+// ================================
+const registrarPago = async (req, res) => {
   try {
-    await pool.query(
-      "INSERT INTO pagos (usuario_id, evento_id, monto, metodo, fecha) VALUES (?, ?, ?, ?, NOW())",
-      [usuario_id, evento_id, monto, metodo]
+    const {
+      usuario_id,
+      evento_id,
+      cantidad,
+      total,
+      estado_pago,
+      email_cliente,
+      mp_preference_id,
+      mp_payment_id,
+      metodo_pago,
+      datos_extra,
+    } = req.body;
+
+    if (!usuario_id || !evento_id || total == null) {
+      return res.status(400).json({ error: "Datos obligatorios faltantes" });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO ventas (
+        usuario_id, evento_id, cantidad, total, estado_pago,
+        email_cliente, mp_preference_id, mp_payment_id, metodo_pago, datos_extra
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        usuario_id,
+        evento_id,
+        cantidad,
+        total,
+        estado_pago,
+        email_cliente,
+        mp_preference_id,
+        mp_payment_id,
+        metodo_pago,
+        datos_extra ? JSON.stringify(datos_extra) : null,
+      ]
     );
-    res.json({ mensaje: "Pago simulado y guardado correctamente" });
+
+    if (estado_pago === "aprobado") {
+      await generarEntradasPorVenta({
+        id: result.insertId,
+        evento_id,
+        cantidad,
+      });
+    }
+
+    res.status(201).json({ ok: true, ventaId: result.insertId });
   } catch (error) {
-    console.error("❌ Error al simular pago:", error);
-    res.status(500).json({ error: "Error al simular pago" });
+    console.error("❌ registrarPago:", error);
+    res.status(500).json({ error: "Error interno del servidor" });
   }
 };
 
-// Obtener pagos por usuario
-exports.obtenerPagosPorUsuario = async (req, res) => {
-  const { usuario_id } = req.params;
+
+// CONTROLADOR WEBHOOK MERCADO PAGO
+const { Payment } = require("mercadopago");
+
+const webhookMercadoPago = async (req, res) => {
   try {
-    const [pagos] = await pool.query(
-      "SELECT * FROM pagos WHERE usuario_id = ? ORDER BY fecha DESC",
-      [usuario_id]
+    console.log("📩 WEBHOOK RECIBIDO");
+    console.log(req.body, req.query);
+
+    const paymentId =
+      req.body?.data?.id || req.query?.id;
+
+    if (!paymentId) {
+      return res.sendStatus(200);
+    }
+
+    const payment = new Payment(client);
+    const paymentData = await payment.get({ id: paymentId });
+
+    const {
+      status,
+      transaction_amount,
+      metadata,
+      payment_method_id,
+      payer,
+      id,
+    } = paymentData;
+
+    if (status !== "approved") {
+      return res.sendStatus(200);
+    }
+
+    const [existente] = await pool.query(
+      "SELECT id FROM ventas WHERE mp_payment_id = ?",
+      [id]
     );
-    res.json(pagos);
-  } catch (error) {
-    console.error("❌ Error al obtener pagos:", error);
-    res.status(500).json({ error: "Error al obtener pagos" });
-  }
-};
 
-// Nueva función para registrar ventas simuladas en tabla 'ventas'
-exports.registrarVentaSimulada = async (req, res) => {
-  const {
-    usuario_id,
-    evento_id,
-    cantidad,
-    total,
-    estado_pago,
-    email_cliente,
-    datos_extra
-  } = req.body;
+    if (existente.length > 0) {
+      console.log("⚠️ Pago duplicado");
+      return res.sendStatus(200);
+    }
 
-  try {
-    await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO ventas (
         usuario_id,
         evento_id,
@@ -72,98 +171,38 @@ exports.registrarVentaSimulada = async (req, res) => {
         total,
         estado_pago,
         email_cliente,
-        datos_extra
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        mp_payment_id,
+        metodo_pago
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        usuario_id,
-        evento_id,
-        cantidad,
-        total,
-        estado_pago || 'simulado',
-        email_cliente,
-        JSON.stringify(datos_extra || {})
+        metadata.usuario_id,
+        metadata.evento_id,
+        metadata.cantidad || 1,
+        transaction_amount,
+        "aprobado",
+        payer.email,
+        id,
+        payment_method_id,
       ]
     );
 
-    res.status(201).json({
-      success: true,
-      mensaje: 'Venta registrada correctamente'
+    await generarEntradasPorVenta({
+      id: result.insertId,
+      evento_id: metadata.evento_id,
+      cantidad: metadata.cantidad || 1,
     });
+
+    console.log("✅ Venta registrada");
+
+    res.sendStatus(200);
   } catch (error) {
-    console.error("❌ Error al registrar venta:", error);
-    res.status(500).json({ error: 'Error al registrar venta' });
+    console.error("❌ Webhook MP:", error);
+    res.sendStatus(500);
   }
 };
 
-const ALLOWED_ESTADOS = ["pendiente", "aprobado", "rechazado"];
-
-// Registrar pago (simulado o webhook)
-exports.registrarPago = async (req, res) => {
-  try {
-    console.log("POST /api/pago/registrar body:", req.body);
-
-    const {
-      usuario_id,
-      evento_id,
-      cantidad = 1,
-      total,
-      estado_pago,
-      email_cliente = null,
-      mp_preference_id = null,
-      mp_payment_id = null,
-      metodo_pago = null,
-      datos_extra = null,
-    } = req.body;
-
-    if (!usuario_id || !evento_id || typeof total === "undefined") {
-      return res.status(400).json({ error: "Faltan datos obligatorios: usuario_id, evento_id o total" });
-    }
-
-    const cantidadNum = Number(cantidad) || 1;
-    const totalNum = Number(total);
-    if (isNaN(totalNum)) return res.status(400).json({ error: "Total inválido" });
-
-    // Normalizar estado_pago: mapear valores no permitidos a 'pendiente'
-    let estadoNormalized = String(estado_pago || "").toLowerCase();
-    if (estadoNormalized === "simulado" || !ALLOWED_ESTADOS.includes(estadoNormalized)) {
-      console.warn("estado_pago no permitido, usando 'pendiente' en su lugar:", estado_pago);
-      estadoNormalized = "pendiente";
-    }
-
-    let datosExtraString = null;
-    try {
-      if (typeof datos_extra !== "undefined" && datos_extra !== null) {
-        datosExtraString = typeof datos_extra === "string" ? datos_extra : JSON.stringify(datos_extra);
-      }
-    } catch (err) {
-      console.warn("Error serializando datos_extra, se almacena NULL:", err);
-      datosExtraString = null;
-    }
-
-    const sql = `
-      INSERT INTO ventas (
-        usuario_id, evento_id, cantidad, total, estado_pago, email_cliente,
-        mp_preference_id, mp_payment_id, metodo_pago, datos_extra
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-    const params = [
-      usuario_id,
-      evento_id,
-      cantidadNum,
-      totalNum,
-      estadoNormalized,
-      email_cliente,
-      mp_preference_id,
-      mp_payment_id,
-      metodo_pago,
-      datosExtraString,
-    ];
-
-    const [result] = await pool.query(sql, params);
-    console.log("registrarPago - venta insertada id:", result.insertId);
-    return res.status(201).json({ ok: true, ventaId: result.insertId });
-  } catch (error) {
-    console.error("registrarPago ERROR:", error && (error.stack || error.message || error));
-    return res.status(500).json({ error: "Error interno del servidor", details: error && (error.message || String(error)) });
-  }
+module.exports = {
+  crearPreferencia,
+  registrarPago,
+  webhookMercadoPago,
 };

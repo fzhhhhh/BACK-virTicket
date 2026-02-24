@@ -14,7 +14,7 @@ router.get("/", verifyToken, soloSuperAdmin, getUsuarios);
 // Eliminar un usuario por ID (solo super-admin autenticado)
 router.delete("/:id", verifyToken, soloSuperAdmin, deleteUsuario);
 
-// 🔐 Asignar rol a un usuario por ID (nuevo endpoint)
+//  Asignar rol a un usuario por ID (nuevo endpoint)
 router.put("/:id/rol", verifyToken, soloSuperAdmin, asignarRol);
 
 module.exports = router;
