@@ -4,11 +4,8 @@ const eventsController = require("../controllers/eventsController");
 const { verifyToken, verifyRole } = require("../middleware/authMiddleware");
 const optionalAuth = require("../middleware/optionalAuth");
 
-
-router.get("/", optionalAuth, eventsController.listarEventos);
-
 // Listar todos los eventos (admin ve todos, público solo los visibles)
-router.get("/", verifyToken, eventsController.listarEventos);
+router.get("/", optionalAuth, eventsController.listarEventos);
 
 // Obtener evento por id
 router.get("/:id", eventsController.obtenerEventoPorId);
