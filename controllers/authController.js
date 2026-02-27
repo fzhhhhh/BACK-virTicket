@@ -1,6 +1,8 @@
 const pool = require("../config/db");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const { OAuth2Client } = require("google-auth-library");
+const appleSigninAuth = require("apple-signin-auth");
 
 // Registro de usuario
 exports.registerUser = async (req, res) => {
@@ -137,5 +139,137 @@ exports.updateUserData = async (req, res) => {
   } catch (error) {
     console.error("❌ Error al actualizar datos:", error);
     res.status(500).json({ error: "Error al actualizar datos del usuario" });
+  }
+};
+
+// ================== LOGIN SOCIAL GOOGLE & APPLE ==================
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+async function emitirJwtYResponder(usuario, res) {
+  const token = jwt.sign(
+    { id: usuario.id, correo: usuario.correo, role: usuario.role },
+    process.env.JWT_SECRET,
+    { expiresIn: "1d" }
+  );
+
+  await pool.query("UPDATE usuarios SET token = ? WHERE id = ?", [token, usuario.id]);
+
+  return res.json({
+    token,
+    role: usuario.role,
+    correo: usuario.correo,
+    id: usuario.id,
+    nombre: usuario.nombre,
+  });
+}
+
+// ✅ GOOGLE
+exports.loginGoogle = async (req, res) => {
+  try {
+    const { id_token } = req.body;
+    if (!id_token) return res.status(400).json({ mensaje: "Falta id_token" });
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken: id_token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    const provider_id = payload.sub;
+    const correo = payload.email;
+    const nombre = payload.name || correo?.split("@")[0] || "Usuario";
+
+    if (!correo || !provider_id) {
+      return res.status(400).json({ mensaje: "Token Google inválido" });
+    }
+
+    // 1) Buscar por provider
+    const [[byProvider]] = await pool.query(
+      "SELECT id, nombre, correo, role FROM usuarios WHERE provider = 'google' AND provider_id = ?",
+      [provider_id]
+    );
+
+    if (byProvider) return emitirJwtYResponder(byProvider, res);
+
+    // 2) Si existe por correo, “linkear”
+    const [[byEmail]] = await pool.query(
+      "SELECT id, nombre, correo, role FROM usuarios WHERE correo = ?",
+      [correo]
+    );
+
+    if (byEmail) {
+      await pool.query(
+        "UPDATE usuarios SET provider = 'google', provider_id = ? WHERE id = ?",
+        [provider_id, byEmail.id]
+      );
+      return emitirJwtYResponder(byEmail, res);
+    }
+
+    // 3) Crear usuario nuevo
+    const [result] = await pool.query(
+      "INSERT INTO usuarios (nombre, correo, contraseña, role, provider, provider_id) VALUES (?, ?, ?, 'user', 'google', ?)",
+      [nombre, correo, "GOOGLE_OAUTH", provider_id]
+    );
+
+    const nuevo = { id: result.insertId, nombre, correo, role: "user" };
+    return emitirJwtYResponder(nuevo, res);
+  } catch (error) {
+    console.error("❌ loginGoogle:", error);
+    return res.status(500).json({ mensaje: "Error login Google" });
+  }
+};
+
+// ✅ APPLE
+exports.loginApple = async (req, res) => {
+  try {
+    const { id_token } = req.body;
+    if (!id_token) return res.status(400).json({ mensaje: "Falta id_token" });
+
+    const payload = await appleSigninAuth.verifyIdToken(id_token, {
+      audience: process.env.APPLE_CLIENT_ID,
+      ignoreExpiration: false,
+    });
+
+    const provider_id = payload.sub;
+    const correo = payload.email || null; // apple a veces no manda email luego del 1er login
+    const nombre = "Usuario";
+
+    if (!provider_id) return res.status(400).json({ mensaje: "Token Apple inválido" });
+
+    // 1) Buscar por provider_id
+    const [[byProvider]] = await pool.query(
+      "SELECT id, nombre, correo, role FROM usuarios WHERE provider = 'apple' AND provider_id = ?",
+      [provider_id]
+    );
+    if (byProvider) return emitirJwtYResponder(byProvider, res);
+
+    // 2) Si Apple mandó email, linkear por correo
+    if (correo) {
+      const [[byEmail]] = await pool.query(
+        "SELECT id, nombre, correo, role FROM usuarios WHERE correo = ?",
+        [correo]
+      );
+
+      if (byEmail) {
+        await pool.query(
+          "UPDATE usuarios SET provider = 'apple', provider_id = ? WHERE id = ?",
+          [provider_id, byEmail.id]
+        );
+        return emitirJwtYResponder(byEmail, res);
+      }
+    }
+
+    // 3) Crear usuario nuevo (si no hay email, guardamos uno “placeholder” único)
+    const correoFinal = correo || `apple_${provider_id}@privado.apple`;
+    const [result] = await pool.query(
+      "INSERT INTO usuarios (nombre, correo, contraseña, role, provider, provider_id) VALUES (?, ?, ?, 'user', 'apple', ?)",
+      [nombre, correoFinal, "APPLE_OAUTH", provider_id]
+    );
+
+    const nuevo = { id: result.insertId, nombre, correo: correoFinal, role: "user" };
+    return emitirJwtYResponder(nuevo, res);
+  } catch (error) {
+    console.error("❌ loginApple:", error);
+    return res.status(500).json({ mensaje: "Error login Apple" });
   }
 };

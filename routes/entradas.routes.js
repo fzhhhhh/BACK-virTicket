@@ -8,11 +8,6 @@ const { verifyToken, verifyRole } = require("../middleware/authMiddleware");
 router.get("/mis", verifyToken, entradasController.getMisEntradas);
 
 // Validar entrada (solo admin/superAdmin)
-router.post(
-  "/validar",
-  verifyToken,
-  verifyRole("admin", "superAdmin"),
-  entradasController.validarEntrada
-);
+router.post("/validar",verifyToken,verifyRole("admin", "superAdmin"),entradasController.validarEntrada);
 
 module.exports = router;

@@ -137,6 +137,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const webhookMercadoPago = async (req, res) => {
   try {
+
+    console.log("📩 WEBHOOK HIT", {
+  method: req.method,
+  url: req.originalUrl,
+  query: req.query,
+  body: req.body,
+  headers: {
+    "content-type": req.headers["content-type"],
+    "user-agent": req.headers["user-agent"],
+  },
+});
     const topic = req.body?.type || req.body?.topic || req.query?.topic;
 
     // 1) Ignorar merchant_order (evita spam)
@@ -261,6 +272,7 @@ const webhookMercadoPago = async (req, res) => {
     return res.sendStatus(200); // MP reintenta; mejor 200 para evitar loops
   }
 };
+
 
 module.exports = {
   crearPreferencia,

@@ -37,6 +37,7 @@ app.use("/api/pago", pagoRoutes);
 app.use("/api/lugares", lugaresRoutes);
 app.use("/api/carrito", carritoRoutes);
 app.use("/api/entradas", require("./routes/entradas.routes"));
+app.use("/api/reportes", require("./routes/reportes.routes"));
 
 // Ruta protegida solo para admins (prueba)
 app.get("/api/admin/panel", verifyAdmin, (req, res) => {
